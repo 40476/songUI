@@ -27,11 +27,14 @@ jobs:
 
       - name: Build release distributions
         run: |
-          cd ../../
-          tree
+          cd ../
+          ls
+          cd ../
+          ls
           python -m pip install build
+          ls
           python -m build
-
+          ls
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
