@@ -1,21 +1,26 @@
 [project]
+name = "songui"
 description = "SongUI: A TUI media controller"
 readme = "README.md"
 dynamic = ["version"]
+requires-python = ">=3.7"
 
 dependencies = [
-  "curses",
-  "subprocess",
-  "argparse",
-  "time",
-  "shutil",
+    "argparse",  # (only needed for Python <3.2)
+]
+
+# Platform-specific dependency for curses
+[project.optional-dependencies]
+curses = [
+    "curses; platform_system != 'Windows'",
+    "windows-curses; platform_system == 'Windows'",
 ]
 
 authors = [
-  {name = "usr_40476", email = "usr_40476@icloud.com"},
+    {name = "usr_40476", email = "usr_40476@icloud.com"},
 ]
 maintainers = [
-  {name = "usr_40476", email = "usr_40476@icloud.com"},
+    {name = "usr_40476", email = "usr_40476@icloud.com"},
 ]
 
 [project.urls]
@@ -23,3 +28,11 @@ Homepage = "https://github.com/40476/songUI"
 Documentation = "https://github.com/40476/songUI/blob/main/readme.md"
 Repository = "https://github.com/40476/songUI.git"
 Issues = "https://github.com/40476/songUI/issues"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel", "setuptools_scm"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+version_scheme = "post-release"
+local_scheme = "no-local-version"
