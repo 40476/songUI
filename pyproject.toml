@@ -2,18 +2,13 @@
 name = "songui"
 description = "SongUI: A TUI media controller"
 readme = "README.md"
-dynamic = ["version"]
 requires-python = ">=3.7"
+dynamic = ["version"]
+dependencies = []
 
-dependencies = [
-    "argparse",  # (only needed for Python <3.2)
-]
-
-# Platform-specific dependency for curses
 [project.optional-dependencies]
 curses = [
-    "curses; platform_system != 'Windows'",
-    "windows-curses; platform_system == 'Windows'",
+    "windows-curses; platform_system == 'Windows'"
 ]
 
 authors = [
