@@ -11,3 +11,4 @@
 - "Reconnect" is a keyboard key ([r]), available only when device not found.
 - All command-line arguments have short forms.
 - In internal mode, if no player is found: show "No Player" screen, auto-retry every autorefresh interval.
+- If --announce/-A is set, announce new song/artist changes using espeak.

@@ -9,6 +9,7 @@
 - "Reconnect" is a keyboard key ([r]), available only when device not found.
 - All command-line arguments have short forms.
 - In internal mode, if no player is found: show "No Player" screen, auto-retry every autorefresh interval.
+- If --announce/-A is set, announce new song/artist changes using espeak.
 """
 import curses
 import subprocess
@@ -31,6 +32,7 @@ def parse_status(output: str) -> dict:
     return info
 
 def ms_to_mins_secs(ms):
+    # Converts ms to hh:mm:ss, like a YouTube timestamp but for people who actually listen to albums.
     seconds = int(ms) // 1000
     mins = seconds // 60
     hours = mins // 60
@@ -50,19 +52,15 @@ def check_device_connected(mac_addr):
         return False
 
 def attempt_bluetooth_connect(mac_addr):
+    # Attempt to bluetoothctl connect, like a desperate AirPods user in a Starbucks.
     try:
         subprocess.run(['bluetoothctl', 'connect', mac_addr.replace('_', ':')], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
     except Exception:
         return False
 
-# def run_bluetoothctl_player_scan(mode):
-#     try:
-#         subprocess.run(['bluetoothctl', 'player.scan', mode], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-#     except Exception:
-#         pass
-
 def figlet_centered(stdscr, text, color_pair=0):
+    # Centers figlet output, so your error message gets the attention it deserves.
     max_y, max_x = stdscr.getmaxyx()
     try:
         figlet_out = subprocess.check_output(
@@ -82,18 +80,22 @@ def figlet_centered(stdscr, text, color_pair=0):
             pass
 
 def which_button(mx, my, button_boxes):
+    # Returns which button (if any) your sweaty mouse finger is pressing.
     for idx, (y1, x1, y2, x2) in enumerate(button_boxes):
         if y1 <= my < y2 and x1 <= mx < x2:
             return idx
     return None
 
 def mac_to_bluez(mac):
+    # MAC address but bluezified, like AA:BB:CC:DD:EE:FF -> AA_BB_CC_DD_EE_FF
     return mac.replace(":", "_").upper()
 
 def bluez_to_mac(bluez_mac):
+    # bluezified MAC to human MAC, for when you want a MAC you can actually read.
     return bluez_mac.replace("_", ":").upper()
 
 def draw_progress_bar(stdscr, y, elapsed, bar_length, prog_pos, prog_dur, remaining, color_pair, internal_audio=False, remaining_time=0, status="", anim_state=None):
+    # Draws the progress bar, or a little <===> animation if the track is over and the UI wants to look alive.
     max_x = stdscr.getmaxyx()[1]
     if internal_audio and remaining_time < 0:
         anim_len = 5  # "<===>"
@@ -116,6 +118,7 @@ def draw_progress_bar(stdscr, y, elapsed, bar_length, prog_pos, prog_dur, remain
     stdscr.addstr(y, 0, line[:max_x], curses.color_pair(color_pair))
 
 def draw_control_buttons(stdscr, labels, highlight_idx, button_boxes, color_pair, highlight_timer=None, autorefresh_interval=1.0):
+    # Draws the play/pause/next/prev buttons with highlight like a real music app, but without the memory leaks.
     max_y, max_x = stdscr.getmaxyx()
     button_boxes.clear()
     btn_y = 9
@@ -157,21 +160,19 @@ def draw_control_buttons(stdscr, labels, highlight_idx, button_boxes, color_pair
         )
 
 def draw_ui(stdscr, info, highlight_idx=None, button_boxes=None, color_pair=0, internal_audio=False, anim_state=None, highlight_timer=None, autorefresh_interval=1.0, bluetooth_mode=False):
+    # The main UI. If you see this break, blame curses, not me.
     stdscr.clear()
     max_y, max_x = stdscr.getmaxyx()
-    album = info.get("Track", info.get("Album", 'Stop posting about baller'))
-    title = info.get("Title", "Unknown Title")
-    artist = info.get("Artist", "Unknown Artist")
-    status = info.get("Status", "paused").capitalize()
-    
-    # Sometimes info.get does not work return fallback values so this is a failsafe
-    if artist=="":
-        artist="Unknown Artist"
-    
+    album = info.get("Track", info.get("Album", 'Unknown Album'))
     if album.endswith("Album:"):
         album='Unknown Album'
     elif album.startswith("Album: ") or album.startswith("Track: "):
         album = album[7:]
+    title = info.get("Title", "Unknown Title")
+    artist = info.get("Artist", "Unknown Artist")
+    if artist == "":
+        artist = "Unknown Artist"
+    status = info.get("Status", "paused").capitalize()
     try:
         position = int(info.get("Position", "0"))
     except Exception:
@@ -212,6 +213,7 @@ def draw_ui(stdscr, info, highlight_idx=None, button_boxes=None, color_pair=0, i
     stdscr.refresh()
 
 def no_player_screen(stdscr, color_pair, autoretry_interval=1.0):
+    # Shows a "No Player" screen. Waits, then tries again, like a loyal dog.
     while True:
         stdscr.clear()
         figlet_centered(stdscr, "No Player", color_pair=color_pair)
@@ -227,12 +229,12 @@ def no_player_screen(stdscr, color_pair, autoretry_interval=1.0):
             if time.time() - wait_start > autoretry_interval:
                 break
             time.sleep(0.05)
-        # retry after interval
         player = find_active_player()
         if player:
             return player
 
 def device_not_found_screen(stdscr, bluez_mac, color_pair, autoretry_interval=1.0, reconnect_callback=None):
+    # If your Bluetooth device is in another room, this will keep looking until you bring it back.
     shown_mac = bluez_to_mac(bluez_mac)
     while True:
         stdscr.clear()
@@ -259,6 +261,7 @@ def device_not_found_screen(stdscr, bluez_mac, color_pair, autoretry_interval=1.
             return True
 
 def find_active_player():
+    # Looks for a running MPRIS2 player. If you have five YouTube tabs open, good luck.
     try:
         players = subprocess.check_output(["playerctl", "-l"], text=True, stderr=subprocess.DEVNULL).splitlines()
         if not players:
@@ -272,6 +275,7 @@ def find_active_player():
         return None
 
 def refresh_internal_audio_info(player):
+    # Gets all the info about the track, using playerctl, which is totally not just a wrapper for dbus-send.
     info = {}
     def get(cmd):
         try:
@@ -282,7 +286,7 @@ def refresh_internal_audio_info(player):
     info["Title"] = get(["playerctl", "-p", player, "metadata", "title"])
     info["Artist"] = get(["playerctl", "-p", player, "metadata", "artist"])
     info["Album"] = get(["playerctl", "-p", player, "metadata", "album"])
-    info["Track"] = get(["playerctl", "-p", player, "metadata", "album"]) # fallback: for consistency
+    info["Track"] = get(["playerctl", "-p", player, "metadata", "album"])
     pos = get(["playerctl", "-p", player, "position"])
     try:
         info["Position"] = str(int(float(pos) * 1000))
@@ -293,6 +297,7 @@ def refresh_internal_audio_info(player):
     return info
 
 def refresh_bluetooth_info(PLAYER_PATH):
+    # If you're using Bluetooth, ask BlueZ very very nicely for the info.
     status_out = run_qdbus6([
         "org.bluez",
         PLAYER_PATH,
@@ -302,7 +307,19 @@ def refresh_bluetooth_info(PLAYER_PATH):
     info = parse_status(status_out)
     return info
 
+def announce_song(title, artist, prev_id, announce_enabled):
+    # Uses espeak to announce the song, so your neighbours know how good your taste is.
+    curr_id = (title, artist)
+    if announce_enabled and curr_id != prev_id:
+        text = f"Now playing: {title} by {artist}"
+        try:
+            subprocess.Popen(['espeak', text])
+        except Exception:
+            pass
+    return curr_id
+
 def handle_keypress_internal_audio(key, player, info, button_boxes, stdscr, color_pair):
+    # Handles all keypresses, including mouse clicks (for those who hate the keyboard).
     highlight_idx = None
     if key == ord('q'):
         return info, highlight_idx, True
@@ -320,6 +337,7 @@ def handle_keypress_internal_audio(key, player, info, button_boxes, stdscr, colo
         subprocess.run(["playerctl", "-p", player, "previous"])
         highlight_idx = 0
     elif key == curses.KEY_MOUSE:
+        # The mouse event handler, for when you want to DJ with your trackpad.
         _, mx, my, _, _ = curses.getmouse()
         btn_idx = which_button(mx, my, button_boxes)
         highlight_idx = btn_idx
@@ -333,9 +351,12 @@ def handle_keypress_internal_audio(key, player, info, button_boxes, stdscr, colo
                 subprocess.run(["playerctl", "-p", player, "play"])
         elif btn_idx == 2:
             subprocess.run(["playerctl", "-p", player, "next"])
+        # Fix: Return immediately so double-skip doesn't occur, unlike your thumb on the Spotify app.
+        return refresh_internal_audio_info(player), highlight_idx, False
     return refresh_internal_audio_info(player), highlight_idx, False
 
 def handle_keypress_bluetooth(key, PLAYER_PATH, info, button_boxes):
+    # Handles keypresses for Bluetooth mode, for when you want to feel pain.
     highlight_idx = None
     if key == ord('q'):
         return info, highlight_idx, True
@@ -369,6 +390,7 @@ def handle_keypress_bluetooth(key, PLAYER_PATH, info, button_boxes):
         ])
         highlight_idx = 0
     elif key == curses.KEY_MOUSE:
+        # Mouse support for Bluetooth, because why not.
         _, mx, my, _, _ = curses.getmouse()
         btn_idx = which_button(mx, my, button_boxes)
         highlight_idx = btn_idx
@@ -398,9 +420,12 @@ def handle_keypress_bluetooth(key, PLAYER_PATH, info, button_boxes):
                 PLAYER_PATH,
                 "org.bluez.MediaPlayer1.Next"
             ])
-    return info, highlight_idx, False
+        # Fix: Return immediately so you don't skip two songs in a row and regret it.
+        return refresh_bluetooth_info(PLAYER_PATH), highlight_idx, False
+    return refresh_bluetooth_info(PLAYER_PATH), highlight_idx, False
 
 def show_figlet_error_screen(stdscr, message, color_pair):
+    # Shows an error message you can't ignore, even if you want to.
     stdscr.clear()
     figlet_centered(stdscr, "Error", color_pair=color_pair)
     max_y, max_x = stdscr.getmaxyx()
@@ -420,20 +445,13 @@ def show_figlet_error_screen(stdscr, message, color_pair):
         time.sleep(0.1)
 
 def update_highlight_timer(now, highlight_timer, highlight_idx, autorefresh_interval):
+    # Handles highlight timing for buttons, because visual feedback is important for dopamine.
     if highlight_timer is not None and now - highlight_timer >= (autorefresh_interval * 0.60):
         return None, None
     return highlight_idx, highlight_timer
 
-def alternate_scan_state(scan_idx, scan_states):
-    scan_idx = 1 - scan_idx
-    return scan_idx, scan_states[scan_idx]
-
-def refresh_and_draw_ui(stdscr, info_func, *ui_args, **ui_kwargs):
-    info = info_func()
-    draw_ui(stdscr, info, *ui_args, **ui_kwargs)
-    return info
-
-def main(stdscr, mac_addr, color_pair, autorefresh_interval=1.0, scan_mode=None):
+def main(stdscr, mac_addr, color_pair, autorefresh_interval=1.0, scan_mode=None, announce=False):
+    # The main event loop. If this function ends, you probably pressed 'q', or Ctrl+C, or your laptop caught fire.
     curses.curs_set(0)
     curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
     stdscr.nodelay(True)
@@ -444,6 +462,7 @@ def main(stdscr, mac_addr, color_pair, autorefresh_interval=1.0, scan_mode=None)
     anim_state = {"frame": 0, "direction": 1, "last_update": time.time()}
     highlight_idx = None
     highlight_timer = None
+    prev_song_id = None
 
     if internal_audio:
         if shutil.which("playerctl") is None:
@@ -455,12 +474,12 @@ def main(stdscr, mac_addr, color_pair, autorefresh_interval=1.0, scan_mode=None)
             return
 
         player = find_active_player()
-        # New: If no player, show no-player screen and autoretry
         while not player:
             player = no_player_screen(stdscr, color_pair, autoretry_interval=autorefresh_interval)
             if player is False:
                 return  # user quit
         info = refresh_internal_audio_info(player)
+        prev_song_id = announce_song(info.get("Title", ""), info.get("Artist", ""), None, announce)
         draw_ui(
             stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
             internal_audio=True, anim_state=anim_state, highlight_timer=highlight_timer, autorefresh_interval=autorefresh_interval
@@ -468,14 +487,13 @@ def main(stdscr, mac_addr, color_pair, autorefresh_interval=1.0, scan_mode=None)
         last_refresh = time.time()
         while True:
             try:
-                # check if player still exists
                 current_player = find_active_player()
                 if not current_player:
-                    # lost player, go to no-player screen and autoretry
                     player = no_player_screen(stdscr, color_pair, autoretry_interval=autorefresh_interval)
                     if player is False:
                         return
                     info = refresh_internal_audio_info(player)
+                    prev_song_id = announce_song(info.get("Title", ""), info.get("Artist", ""), None, announce)
                     draw_ui(
                         stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
                         internal_audio=True, anim_state=anim_state, highlight_timer=highlight_timer,
@@ -517,12 +535,14 @@ def main(stdscr, mac_addr, color_pair, autorefresh_interval=1.0, scan_mode=None)
                     else:
                         info = refresh_internal_audio_info(player)
                         last_refresh = now
+                    prev_song_id = announce_song(
+                        info.get("Title", ""), info.get("Artist", ""), prev_song_id, announce
+                    )
                     draw_ui(
                         stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
                         internal_audio=True, anim_state=anim_state, highlight_timer=highlight_timer,
                         autorefresh_interval=autorefresh_interval
                     )
-
                 if key == -1:
                     time.sleep(0.05)
                     continue
@@ -531,6 +551,9 @@ def main(stdscr, mac_addr, color_pair, autorefresh_interval=1.0, scan_mode=None)
                     highlight_idx = idx
                     highlight_timer = time.time()
                 info = info_new
+                prev_song_id = announce_song(
+                    info.get("Title", ""), info.get("Artist", ""), prev_song_id, announce
+                )
                 draw_ui(
                     stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
                     internal_audio=True, anim_state=anim_state, highlight_timer=highlight_timer,
@@ -549,18 +572,8 @@ def main(stdscr, mac_addr, color_pair, autorefresh_interval=1.0, scan_mode=None)
             attempt_bluetooth_connect(mac_addr)
 
         attempt_bluetooth_connect(mac_addr)
-
         highlight_idx = None
         highlight_timer = None
-
-        # scan_states = ["alltracks", "off"]
-        # scan_idx = 0 if scan_mode == "alltracks" else 1
-        # scan_last_switch_time = None
-        # scan_last_mode_sent = None
-
-        # run_bluetoothctl_player_scan(scan_states[scan_idx])
-        # scan_last_mode_sent = scan_states[scan_idx]
-        # scan_last_switch_time = time.time()
 
         def bluetooth_info():
             return refresh_bluetooth_info(PLAYER_PATH)
@@ -573,6 +586,7 @@ def main(stdscr, mac_addr, color_pair, autorefresh_interval=1.0, scan_mode=None)
             if not found:
                 return
         info = bluetooth_info()
+        prev_song_id = announce_song(info.get("Title", ""), info.get("Artist", ""), None, announce)
         draw_ui(
             stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
             highlight_timer=highlight_timer, autorefresh_interval=autorefresh_interval,
@@ -585,15 +599,6 @@ def main(stdscr, mac_addr, color_pair, autorefresh_interval=1.0, scan_mode=None)
                 now = time.time()
                 highlight_idx, highlight_timer = update_highlight_timer(now, highlight_timer, highlight_idx, autorefresh_interval)
 
-                # Bluetooth scan alternation (disabled as per your comment)
-                # if scan_last_switch_time is None:
-                #     scan_last_switch_time = now
-                # if now - scan_last_switch_time >= 5.0:
-                #     scan_idx, new_mode = alternate_scan_state(scan_idx, scan_states)
-                #     run_bluetoothctl_player_scan(new_mode)
-                #     scan_last_mode_sent = new_mode
-                #     scan_last_switch_time = now
-
                 if not check_device_connected(mac_addr):
                     found = device_not_found_screen(
                         stdscr, bluez_mac, color_pair, autoretry_interval=autorefresh_interval,
@@ -602,6 +607,7 @@ def main(stdscr, mac_addr, color_pair, autorefresh_interval=1.0, scan_mode=None)
                     if not found:
                         return
                     info = bluetooth_info()
+                    prev_song_id = announce_song(info.get("Title", ""), info.get("Artist", ""), prev_song_id, announce)
                     draw_ui(
                         stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
                         highlight_timer=highlight_timer, autorefresh_interval=autorefresh_interval,
@@ -611,6 +617,7 @@ def main(stdscr, mac_addr, color_pair, autorefresh_interval=1.0, scan_mode=None)
                     continue
                 if now - last_refresh > autorefresh_interval:
                     info = bluetooth_info()
+                    prev_song_id = announce_song(info.get("Title", ""), info.get("Artist", ""), prev_song_id, announce)
                     draw_ui(
                         stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
                         highlight_timer=highlight_timer, autorefresh_interval=autorefresh_interval,
@@ -627,6 +634,7 @@ def main(stdscr, mac_addr, color_pair, autorefresh_interval=1.0, scan_mode=None)
                     highlight_idx = idx
                     highlight_timer = time.time()
                 info = bluetooth_info()
+                prev_song_id = announce_song(info.get("Title", ""), info.get("Artist", ""), prev_song_id, announce)
                 draw_ui(
                     stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
                     highlight_timer=highlight_timer, autorefresh_interval=autorefresh_interval,
@@ -643,10 +651,11 @@ def parse_args():
     parser.add_argument('-D', '--device', type=str, required=False, help="Bluetooth MAC address of the device")
     parser.add_argument('-c', '--color', type=str, default="white", help="Color theme (default: white)")
     parser.add_argument('-a', '--autorefresh', type=float, default=1.0, help="Autorefresh interval in seconds (default: 1.0)")
-    # parser.add_argument('-s', '--scan', type=str, required=False, help="player.scan mode for bluetooth: alltracks or off (required if --device is specified) NOT USED DUE TO INSTABILITY")
+    parser.add_argument('-A', '--announce', action='store_true', help="Announce songs using espeak")
     return parser.parse_args()
 
 def color_theme(theme):
+    # Give your eyes a treat with a color theme that actually works in a terminal.
     colors = dict(
         black=curses.COLOR_BLACK, red=curses.COLOR_RED, green=curses.COLOR_GREEN, yellow=curses.COLOR_YELLOW,
         blue=curses.COLOR_BLUE, magenta=curses.COLOR_MAGENTA, cyan=curses.COLOR_CYAN, white=curses.COLOR_WHITE
@@ -656,18 +665,17 @@ def color_theme(theme):
     return 1
 
 def run():
+    # "You cant park there sir"
+    # _/==\_
+    # o----o
     args = parse_args()
     mac_addr = args.device
-    # scan_mode = args.scan.lower() if args.scan else None
+    announce = args.announce
     def wrapped(stdscr):
         curses.start_color()
         color_pair = color_theme(args.color)
-        main(stdscr, mac_addr, color_pair, autorefresh_interval=args.autorefresh)#scan_mode=scan_mode)
+        main(stdscr, mac_addr, color_pair, autorefresh_interval=args.autorefresh, announce=announce)
     curses.wrapper(wrapped)
 
 if __name__ == "__main__":
     run()
-
-# "You cant park there sir"
-# _/==\_
-# o----o
