@@ -1,4 +1,4 @@
-# Songui
+# SongUI
 
 ## A curses-based music player UI for Bluetooth or local (MPRIS2/playerctl) audio.
 
