@@ -60,7 +60,7 @@ def attempt_bluetooth_connect(mac_addr):
         return False
 
 def figlet_centered(stdscr, text, color_pair=0):
-    # Centers figlet output, so your error message gets the attention it deserves.
+    # Centers figlet output, so your skill issue message gets the attention it deserves.
     max_y, max_x = stdscr.getmaxyx()
     try:
         figlet_out = subprocess.check_output(
