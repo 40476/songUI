@@ -8,6 +8,15 @@
 name: Upload Python Package
 
 on:
+  workflow_dispatch:
+      inputs:
+        logLevel:
+          required: true
+          type: choice
+          options:
+          - info
+          - warning
+          - debug
   release:
     types: [published]
 
