@@ -36,10 +36,8 @@ jobs:
 
       - name: Build release distributions
         run: |
-          cd ../
-          ls
-          cd ../
-          ls
+          cd ../../
+          tree
           python -m pip install build
           ls
           python -m build
