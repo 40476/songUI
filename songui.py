@@ -34,13 +34,13 @@ def parse_status(output: str) -> dict:
 def ms_to_mins_secs(ms):
     # Converts ms to hh:mm:ss, like a YouTube timestamp but for people who actually listen to albums.
     seconds = int(ms) // 1000
-    mins = seconds // 60
-    hours = mins // 60
+    mins = ( seconds // 60 ) % 60
+    hours = (seconds // 60 ) // 60
     secs = seconds % 60
     return f"{hours:02}:{mins:02}:{secs:02}"
 
 def check_device_connected(mac_addr):
-    dev_path = f"/org/bluez/hci0/dev_{mac_addr.replace(':', '_')}"
+    dev_path = f"/org/bluez/hci0/dev_{mac_to_bluez(mac_addr)}"
     try:
         output = subprocess.check_output(
             ["qdbus6", "--system", "org.bluez", dev_path, "org.freedesktop.DBus.Properties.Get", "org.bluez.Device1", "Connected"],
@@ -54,7 +54,7 @@ def check_device_connected(mac_addr):
 def attempt_bluetooth_connect(mac_addr):
     # Attempt to bluetoothctl connect, like a desperate AirPods user in a Starbucks.
     try:
-        subprocess.run(['bluetoothctl', 'connect', mac_addr.replace('_', ':')], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(['bluetoothctl', 'connect', bluez_to_mac(mac_addr)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
     except Exception:
         return False
