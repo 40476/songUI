@@ -19,10 +19,15 @@ import argparse
 import time
 import shutil
 import sys
+import os
+import signal
+
+# Global variable to remember the currently running espeak pid
+ESPEAK_PID = None
 
 # Dependency free checker (is playerctl/espeak/qdbus6/figlet in $PATH? or is the user a dumb*ss?)
 def check_deps(espeak_optional=False):
-    # This function checks if the required binaries are in $PATH.
+    # If you don't have these, this script is as useful as a chocolate teapot.
     missing = []
     for dep in ["playerctl", "qdbus6", "figlet"]:
         if shutil.which(dep) is None:
@@ -32,14 +37,14 @@ def check_deps(espeak_optional=False):
     return missing
 
 def run_qdbus6(args):
-    # Used for querying Bluetooth device state/info.
+    # Used for querying Bluetooth device state/info. Be nice to D-Bus, it has feelings.
     try:
         return subprocess.check_output(["qdbus6", "--system"] + args, text=True)
     except Exception:
         return ""
 
 def parse_status(output: str) -> dict:
-    # Generic parser for colon-delimited status lines stuff
+    # Turns "Key: Value" lines into a dict. Still easier than parsing HTML.
     info = {}
     for line in output.splitlines():
         if ':' in line:
@@ -48,7 +53,7 @@ def parse_status(output: str) -> dict:
     return info
 
 def ms_to_mins_secs(ms):
-    # Handles times longer than an hour.
+    # Converts ms to hh:mm:ss, for people who actually listen to albums.
     seconds = int(ms) // 1000
     mins = (seconds // 60) % 60
     hours = (seconds // 60) // 60
@@ -56,7 +61,7 @@ def ms_to_mins_secs(ms):
     return f"{hours:02}:{mins:02}:{secs:02}"
 
 def check_device_connected(mac_addr):
-    # Uses qdbus6 to check BlueZ property.
+    # Checks if your Bluetooth device is connected or if it's ghosting you again.
     dev_path = f"/org/bluez/hci0/dev_{mac_to_bluez(mac_addr)}"
     try:
         output = subprocess.check_output(
@@ -69,7 +74,7 @@ def check_device_connected(mac_addr):
         return False
 
 def attempt_bluetooth_connect(mac_addr):
-    # This will attempt to connect, but does not guarantee success.
+    # Attempts to connect to your Bluetooth device like a desperate AirPods user in Starbucks.
     try:
         subprocess.run(['bluetoothctl', 'connect', bluez_to_mac(mac_addr)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
@@ -77,7 +82,7 @@ def attempt_bluetooth_connect(mac_addr):
         return False
 
 def figlet_centered(stdscr, text, color_pair=0):
-    # Invokes figlet to generate ASCII art, centers it in the terminal, unlike your nose
+    # Centers your figlet message, because you deserve to be the center of attention.
     max_y, max_x = stdscr.getmaxyx()
     try:
         figlet_out = subprocess.check_output(
@@ -86,7 +91,7 @@ def figlet_centered(stdscr, text, color_pair=0):
             stderr=subprocess.DEVNULL
         )
     except Exception:
-        figlet_out = text
+        figlet_out = text  # If you don't have figlet, you get boring text.
     lines = figlet_out.splitlines()
     y0 = max((max_y - len(lines)) // 2, 0)
     for i, line in enumerate(lines):
@@ -97,18 +102,18 @@ def figlet_centered(stdscr, text, color_pair=0):
             pass
 
 def which_button(mx, my, button_boxes):
-    # Mouse coordinates (mx, my) versus bounding boxes.
+    # Returns which button (if any) your greasy mouse pointer is over.
     for idx, (y1, x1, y2, x2) in enumerate(button_boxes):
         if y1 <= my < y2 and x1 <= mx < x2:
             return idx
     return None
 
 def mac_to_bluez(mac):
-    # MAC address but bluezified, like AA:BB:CC:DD:EE:FF -> AA_BB_CC_DD_EE_FF
+    # MAC address but bluezified, because BlueZ can't handle colons like a normal person.
     return mac.replace(":", "_").upper()
 
 def bluez_to_mac(bluez_mac):
-    # bluezified MAC to human MAC, for when you want a MAC you can actually read.
+    # Turns BlueZ's weird MAC back into something you can copy and paste.
     return bluez_mac.replace("_", ":").upper()
 
 def draw_progress_bar(stdscr, y, elapsed, bar_length, prog_pos, prog_dur, remaining, color_pair, internal_audio=False, remaining_time=0, status="", anim_state=None):
@@ -140,7 +145,7 @@ def draw_progress_bar(stdscr, y, elapsed, bar_length, prog_pos, prog_dur, remain
     stdscr.addstr(y, 0, line[:max_x], curses.color_pair(color_pair))
 
 def draw_control_buttons(stdscr, labels, highlight_idx, button_boxes, color_pair, highlight_timer=None, autorefresh_interval=1.0, mouse_ignore_idx=None):
-    # Each button is a drawn box with a unicode label.
+    # Draws the play/pause/next/prev buttons with instant highlight, because you need that dopamine NOW.
     max_y, max_x = stdscr.getmaxyx()
     button_boxes.clear()
     btn_y = 9
@@ -194,7 +199,7 @@ def draw_control_buttons(stdscr, labels, highlight_idx, button_boxes, color_pair
             pass
 
 def fill_background(stdscr, color_pair):
-    # Fill the whole screen with spaces using the specified color pair.
+    # Fill the whole screen with spaces using the specified color pair, because transparency is for cowards
     max_y, max_x = stdscr.getmaxyx()
     for y in range(max_y):
         try:
@@ -256,7 +261,7 @@ def draw_ui(stdscr, info, highlight_idx=None, button_boxes=None, color_pair=0, i
         stdscr.refresh()
     except curses.error:
         stdscr.clear()
-        msg = "Curses clocked out. Try resizing the window.\n(Maybe dont ratio it so hard next time.)"
+        msg = "Curses clocked out. Try resizing the window.\n(Maybe don't ratio it so hard next time.)"
         try:
             stdscr.addstr(0, 0, msg)
             stdscr.refresh()
@@ -361,13 +366,21 @@ def refresh_bluetooth_info(PLAYER_PATH):
 
 def announce_song(title, artist, prev_id, announce_enabled):
     # Uses espeak to announce the song, so your neighbours know how good your taste is.
+    global ESPEAK_PID
     curr_id = (title, artist)
     if announce_enabled and curr_id != prev_id and shutil.which("espeak"):
         text = f"Now playing: {title} by {artist}"
+        # Kill previous espeak process by PID if it exists, because otherwise it's karaoke chaos
         try:
-            subprocess.Popen(['espeak', text])
+            if ESPEAK_PID is not None and int(ESPEAK_PID) > 0:
+                os.kill(int(ESPEAK_PID), signal.SIGKILL)
         except Exception:
             pass
+        try:
+            proc = subprocess.Popen(['espeak', text])
+            ESPEAK_PID = proc.pid
+        except Exception:
+            ESPEAK_PID = None
     return curr_id
 
 def handle_keypress_internal_audio(key, player, info, button_boxes, stdscr, color_pair, highlight_idx, highlight_timer, autorefresh_interval):
