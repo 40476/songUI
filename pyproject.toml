@@ -2,7 +2,7 @@
 name = "songui"
 description = "SongUI: A TUI media controller"
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.11"
 dynamic = ["version"]
 dependencies = []
 authors = [
@@ -10,11 +10,6 @@ authors = [
 ]
 maintainers = [
     {name = "usr_40476", email = "usr_40476@icloud.com"},
-]
-
-[project.optional-dependencies]
-curses = [
-    "windows-curses; platform_system == 'Windows'"
 ]
 
 [project.urls]
