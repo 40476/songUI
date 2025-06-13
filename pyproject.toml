@@ -18,6 +18,8 @@ Documentation = "https://github.com/40476/songUI/blob/main/readme.md"
 Repository = "https://github.com/40476/songUI.git"
 Issues = "https://github.com/40476/songUI/issues"
 
+[project.scripts]
+songui="songui.py"
 [build-system]
 requires = ["setuptools>=61.0", "wheel", "setuptools_scm"]
 build-backend = "setuptools.build_meta"
