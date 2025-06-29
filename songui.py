@@ -21,6 +21,9 @@ import shutil
 import sys
 import os
 import signal
+import struct
+import tempfile
+import threading
 
 # Global variable to remember the currently running espeak pid
 ESPEAK_PID = None
@@ -207,7 +210,7 @@ def fill_background(stdscr, color_pair):
         except curses.error:
             pass
 
-def draw_ui(stdscr, info, highlight_idx=None, button_boxes=None, color_pair=0, internal_audio=False, anim_state=None, highlight_timer=None, autorefresh_interval=1.0, bluetooth_mode=False, mouse_ignore_idx=None):
+def draw_ui(stdscr, info, highlight_idx=None, button_boxes=None, color_pair=0, internal_audio=False, anim_state=None, highlight_timer=None, autorefresh_interval=1.0, bluetooth_mode=False, mouse_ignore_idx=None, visualizer_data=None, fg_color=7, bg_color=0):
     # The main UI. If you see this break, blame curses, not me.
     try:
         fill_background(stdscr, color_pair)
@@ -258,6 +261,10 @@ def draw_ui(stdscr, info, highlight_idx=None, button_boxes=None, color_pair=0, i
         help_line = "Controls: [p] Play/Pause  [n] Next  [b] Previous  [q] Quit"
         stdscr.addstr(btn_y+btn_h+1, 0, help_line.center(max_x), curses.color_pair(color_pair))
         stdscr.addstr(btn_y+btn_h+2, 0, "=" * max_x, curses.color_pair(color_pair))
+        # Draw visualizer if present
+        if visualizer_data is not None:
+            vis_height = max(4, max_y // 6)
+            draw_visualizer(stdscr, visualizer_data, max_y - vis_height, color_pair, fg_color, bg_color)
         stdscr.refresh()
     except curses.error:
         stdscr.clear()
@@ -364,7 +371,7 @@ def refresh_bluetooth_info(PLAYER_PATH):
     info = parse_status(status_out)
     return info
 
-def announce_song(title, artist, prev_id, announce_enabled):
+def announce_song(title, artist, prev_id, announce_enabled, skip_delay=0):
     # Uses espeak to announce the song, so your neighbours know how good your taste is.
     global ESPEAK_PID
     curr_id = (title, artist)
@@ -377,6 +384,8 @@ def announce_song(title, artist, prev_id, announce_enabled):
         except Exception:
             pass
         try:
+            if skip_delay > 0:
+                time.sleep(skip_delay)
             proc = subprocess.Popen(['espeak', text])
             ESPEAK_PID = proc.pid
         except Exception:
@@ -523,8 +532,86 @@ def parse_color_arg(color_str, is_fg=True):
     except Exception:
         return -1
 
-def main(stdscr, mac_addr, color_pair, bg_color_pair, autorefresh_interval=1.0, scan_mode=None, announce=False):
-    # The main event loop. If this function ends, you probably pressed 'q', or Ctrl+C, or your laptop caught fire.
+def launch_cava_visualizer(bars=30, bit_format="16bit", fg_color=7, bg_color=0, autogain=True):
+    # Launch cava as a subprocess and yield normalized bar values
+    conpat = """
+[general]
+bars = %d
+autogain = %s
+[output]
+method = raw
+raw_target = %s
+bit_format = %s
+"""
+    RAW_TARGET = "/dev/stdout"
+    config = conpat % (bars, "1" if autogain else "0", RAW_TARGET, bit_format)
+    bytetype, bytesize, bytenorm = ("H", 2, 65535) if bit_format == "16bit" else ("B", 1, 255)
+    def cava_reader(pipe, chunk, fmt, bytenorm, outlist, stop_event):
+        while not stop_event.is_set():
+            data = pipe.read(chunk)
+            if not data or len(data) < chunk:
+                break
+            sample = [i / bytenorm for i in struct.unpack(fmt, data)]
+            outlist[:] = sample
+    config_file = tempfile.NamedTemporaryFile(delete=False)
+    config_file.write(config.encode())
+    config_file.flush()
+    process = subprocess.Popen(["cava", "-p", config_file.name], stdout=subprocess.PIPE)
+    chunk = bytesize * bars
+    fmt = bytetype * bars
+    vis_data = [0.0] * bars
+    stop_event = threading.Event()
+    thread = threading.Thread(target=cava_reader, args=(process.stdout, chunk, fmt, bytenorm, vis_data, stop_event), daemon=True)
+    thread.start()
+    return process, vis_data, stop_event, config_file.name
+
+def draw_visualizer(stdscr, vis_data, y_start, color_pair, fg_color, bg_color):
+    # Draws the visualizer bars at the bottom of the screen
+    max_y, max_x = stdscr.getmaxyx()
+    term_width = max_x
+    bars = len(vis_data)
+    max_height = max_y - y_start
+    display_data = []
+    if bars == term_width:
+        display_data = vis_data
+    elif bars > term_width:
+        # Downsample: average groups of bars
+        factor = bars / term_width
+        display_data = [
+            sum(vis_data[int(i*factor):int((i+1)*factor)]) / max(1, int((i+1)*factor)-int(i*factor))
+            for i in range(term_width)
+        ]
+    else:
+        # Repeat each bar to fill the width (no smoothing), distribute extra columns symmetrically
+        repeats = term_width // bars
+        remainder = term_width % bars
+        # Calculate how many times each bar should be repeated
+        repeat_counts = [repeats] * bars
+        # Distribute the remainder symmetrically from the center
+        center = bars // 2
+        left = center - (remainder // 2)
+        for i in range(remainder):
+            idx = left + i
+            if idx < bars:
+                repeat_counts[idx] += 1
+        for i, val in enumerate(vis_data):
+            display_data.extend([val] * repeat_counts[i])
+        # If rounding error, trim or pad
+        if len(display_data) > term_width:
+            display_data = display_data[:term_width]
+        elif len(display_data) < term_width:
+            display_data.extend([vis_data[-1]] * (term_width - len(display_data)))
+    for i, val in enumerate(display_data):
+        height = int(val * max_height)
+        for h in range(max_height):
+            y = y_start + max_height - h - 1
+            char = '█' if h < height else ' '
+            try:
+                stdscr.addstr(y, i, char, curses.color_pair(color_pair))
+            except curses.error:
+                pass
+
+def main(stdscr, mac_addr, color_pair, bg_color_pair, autorefresh_interval=1.0, visu_refresh=0.1, scan_mode=None, announce=False):
     curses.curs_set(0)
     curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
     stdscr.nodelay(True)
@@ -536,218 +623,280 @@ def main(stdscr, mac_addr, color_pair, bg_color_pair, autorefresh_interval=1.0, 
     highlight_idx = None
     highlight_timer = None
     prev_song_id = None
+    last_announce_time = 0
 
     fill_background(stdscr, color_pair)
 
-    if internal_audio:
-        if shutil.which("playerctl") is None:
-            show_figlet_error_screen(
-                stdscr,
-                "playerctl is not installed.\nInstall it to use this program without --device.",
-                color_pair
-            )
-            return
+    # Visualizer setup
+    args = parse_args()
+    visualizer_enabled = getattr(args, 'visualizer', False)
+    fg_color = parse_color_arg(args.color, is_fg=True)
+    bg_color = parse_color_arg(args.bgcolor, is_fg=False)
+    term_width = stdscr.getmaxyx()[1]
+    visu_bars = max(1, min(getattr(args, 'visu_bars', 30), term_width))
+    visu_autogain = getattr(args, 'visu_autogain', True)
+    cava_process = None
+    vis_data = None
+    stop_event = None
+    cava_config_file = None
+    if visualizer_enabled and shutil.which("cava"):
+        cava_process, vis_data, stop_event, cava_config_file = launch_cava_visualizer(bars=visu_bars, fg_color=fg_color, bg_color=bg_color, autogain=visu_autogain)
 
-        player = find_active_player()
-        while not player:
-            player = no_player_screen(stdscr, color_pair, autoretry_interval=autorefresh_interval)
-            if player is False:
+    try:
+        if internal_audio:
+            if shutil.which("playerctl") is None:
+                show_figlet_error_screen(
+                    stdscr,
+                    "playerctl is not installed.\nInstall it to use this program without --device.",
+                    color_pair
+                )
                 return
-        info = refresh_internal_audio_info(player)
-        prev_song_id = announce_song(info.get("Title", ""), info.get("Artist", ""), None, announce)
-        draw_ui(
-            stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
-            internal_audio=True, anim_state=anim_state, highlight_timer=highlight_timer, autorefresh_interval=autorefresh_interval,
-            mouse_ignore_idx=highlight_idx
-        )
-        last_refresh = time.time()
-        while True:
-            try:
-                current_player = find_active_player()
-                if not current_player:
-                    player = no_player_screen(stdscr, color_pair, autoretry_interval=autorefresh_interval)
-                    if player is False:
-                        return
-                    info = refresh_internal_audio_info(player)
-                    prev_song_id = announce_song(info.get("Title", ""), info.get("Artist", ""), None, announce)
-                    draw_ui(
-                        stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
-                        internal_audio=True, anim_state=anim_state, highlight_timer=highlight_timer,
-                        autorefresh_interval=autorefresh_interval,
-                        mouse_ignore_idx=highlight_idx
-                    )
-                    last_refresh = time.time()
-                    continue
-                else:
-                    player = current_player
-                key = stdscr.getch()
-                now = time.time()
-                anim_update_needed = False
-                if info:
-                    try:
-                        pos = int(info.get("Position", "0"))
-                        dur = int(info.get("Duration", "1"))
-                        rem = dur - pos
-                    except:
-                        rem = 0
-                    if rem < 0:
-                        if now - anim_state.get("last_update", 0) > 0.07:
-                            anim_update_needed = True
 
-                highlight_idx, highlight_timer = update_highlight_timer(now, highlight_timer, highlight_idx, autorefresh_interval)
-
-                if now - last_refresh > autorefresh_interval or anim_update_needed:
-                    if anim_update_needed:
-                        bar_length = max(stdscr.getmaxyx()[1] - 23, 10)
-                        anim_len = 5
-                        bar_inside = bar_length - 2
-                        if anim_state["frame"] < 0:
-                            anim_state["frame"] = 0
-                            anim_state["direction"] = 1
-                        if anim_state["frame"] > bar_inside - anim_len:
-                            anim_state["frame"] = bar_inside - anim_len
-                            anim_state["direction"] = -1
-                        anim_state["frame"] += anim_state["direction"]
-                        anim_state["last_update"] = now
-                    else:
+            player = find_active_player()
+            while not player:
+                player = no_player_screen(stdscr, color_pair, autoretry_interval=autorefresh_interval)
+                if player is False:
+                    return
+            info = refresh_internal_audio_info(player)
+            prev_song_id = announce_song(info.get("Title", ""), info.get("Artist", ""), None, announce)
+            draw_ui(
+                stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
+                internal_audio=True, anim_state=anim_state, highlight_timer=highlight_timer, autorefresh_interval=autorefresh_interval,
+                mouse_ignore_idx=highlight_idx, visualizer_data=vis_data if visualizer_enabled else None, fg_color=fg_color, bg_color=bg_color
+            )
+            last_ui_refresh = time.time()
+            last_visu_refresh = time.time()
+            while True:
+                try:
+                    current_player = find_active_player()
+                    if not current_player:
+                        player = no_player_screen(stdscr, color_pair, autoretry_interval=autorefresh_interval)
+                        if player is False:
+                            return
                         info = refresh_internal_audio_info(player)
-                        last_refresh = now
-                    prev_song_id = announce_song(
-                        info.get("Title", ""), info.get("Artist", ""), prev_song_id, announce
+                        prev_song_id = announce_song(info.get("Title", ""), info.get("Artist", ""), None, announce)
+                        draw_ui(
+                            stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
+                            internal_audio=True, anim_state=anim_state, highlight_timer=highlight_timer,
+                            autorefresh_interval=autorefresh_interval,
+                            mouse_ignore_idx=highlight_idx, visualizer_data=vis_data if visualizer_enabled else None, fg_color=fg_color, bg_color=bg_color
+                        )
+                        last_ui_refresh = time.time()
+                        last_visu_refresh = time.time()
+                        continue
+                    else:
+                        player = current_player
+                    key = stdscr.getch()
+                    now = time.time()
+                    anim_update_needed = False
+                    if info:
+                        try:
+                            pos = int(info.get("Position", "0"))
+                            dur = int(info.get("Duration", "1"))
+                            rem = dur - pos
+                        except:
+                            rem = 0
+                        if rem < 0:
+                            if now - anim_state.get("last_update", 0) > 0.07:
+                                anim_update_needed = True
+
+                    highlight_idx, highlight_timer = update_highlight_timer(now, highlight_timer, highlight_idx, autorefresh_interval)
+
+                    if now - last_announce_time < 3:
+                        skip_delay = 3
+                    else:
+                        skip_delay = 0
+
+                    ui_should_refresh = (now - last_ui_refresh > autorefresh_interval) or anim_update_needed
+                    visu_should_refresh = visualizer_enabled and (now - last_visu_refresh > visu_refresh)
+
+                    if ui_should_refresh or visu_should_refresh:
+                        # Only refresh info if UI refresh is due
+                        if ui_should_refresh:
+                            if anim_update_needed:
+                                bar_length = max(stdscr.getmaxyx()[1] - 23, 10)
+                                anim_len = 5
+                                bar_inside = bar_length - 2
+                                if anim_state["frame"] < 0:
+                                    anim_state["frame"] = 0
+                                    anim_state["direction"] = 1
+                                if anim_state["frame"] > bar_inside - anim_len:
+                                    anim_state["frame"] = bar_inside - anim_len
+                                    anim_state["direction"] = -1
+                                anim_state["frame"] += anim_state["direction"]
+                                anim_state["last_update"] = now
+                            else:
+                                info = refresh_internal_audio_info(player)
+                                last_ui_refresh = now
+                            prev_song_id = announce_song(
+                                info.get("Title", ""), info.get("Artist", ""), prev_song_id, announce, skip_delay=skip_delay
+                            )
+                            last_announce_time = now
+                        # Always redraw UI if either refresh is due
+                        draw_ui(
+                            stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
+                            internal_audio=True, anim_state=anim_state, highlight_timer=highlight_timer,
+                            autorefresh_interval=autorefresh_interval,
+                            mouse_ignore_idx=highlight_idx, visualizer_data=vis_data if visualizer_enabled else None, fg_color=fg_color, bg_color=bg_color
+                        )
+                        if ui_should_refresh:
+                            last_ui_refresh = now
+                        if visu_should_refresh:
+                            last_visu_refresh = now
+                    if key == -1:
+                        time.sleep(0.02)
+                        continue
+                    info_new, idx, quit_app, new_timer = handle_keypress_internal_audio(
+                        key, player, info, button_boxes, stdscr, color_pair, highlight_idx, highlight_timer, autorefresh_interval
                     )
+                    if idx is not None:
+                        highlight_idx = idx
+                        highlight_timer = new_timer
+                    info = info_new
+                    prev_song_id = announce_song(
+                        info.get("Title", ""), info.get("Artist", ""), prev_song_id, announce, skip_delay=skip_delay
+                    )
+                    last_announce_time = now
                     draw_ui(
                         stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
                         internal_audio=True, anim_state=anim_state, highlight_timer=highlight_timer,
                         autorefresh_interval=autorefresh_interval,
-                        mouse_ignore_idx=highlight_idx
+                        mouse_ignore_idx=highlight_idx, visualizer_data=vis_data if visualizer_enabled else None, fg_color=fg_color, bg_color=bg_color
                     )
-                if key == -1:
-                    time.sleep(0.02)
-                    continue
-                info_new, idx, quit_app, new_timer = handle_keypress_internal_audio(
-                    key, player, info, button_boxes, stdscr, color_pair, highlight_idx, highlight_timer, autorefresh_interval
-                )
-                if idx is not None:
-                    highlight_idx = idx
-                    highlight_timer = new_timer
-                info = info_new
-                prev_song_id = announce_song(
-                    info.get("Title", ""), info.get("Artist", ""), prev_song_id, announce
-                )
-                draw_ui(
-                    stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
-                    internal_audio=True, anim_state=anim_state, highlight_timer=highlight_timer,
-                    autorefresh_interval=autorefresh_interval,
-                    mouse_ignore_idx=highlight_idx
-                )
-                last_refresh = time.time()
-                if quit_app:
+                    last_ui_refresh = time.time()
+                    if quit_app:
+                        break
+                except KeyboardInterrupt:
                     break
-            except KeyboardInterrupt:
-                break
-            except curses.error:
-                stdscr.clear()
-                msg = "Screen too small. Try resizing your terminal or accept your fate.\n(You lost to a terminal window, congrats.)"
-                try:
-                    stdscr.addstr(0, 0, msg)
-                    stdscr.refresh()
-                    time.sleep(2)
-                except Exception:
-                    pass
-    else:
-        bluez_mac = mac_to_bluez(mac_addr)
-        PLAYER_PATH = f"/org/bluez/hci0/dev_{bluez_mac}/player0"
+                except curses.error:
+                    stdscr.clear()
+                    msg = "Screen too small. Try resizing your terminal or accept your fate.\n(You lost to a terminal window, congrats.)"
+                    try:
+                        stdscr.addstr(0, 0, msg)
+                        stdscr.refresh()
+                        time.sleep(2)
+                    except Exception:
+                        pass
+        else:
+            bluez_mac = mac_to_bluez(mac_addr)
+            PLAYER_PATH = f"/org/bluez/hci0/dev_{bluez_mac}/player0"
 
-        def do_reconnect():
+            def do_reconnect():
+                attempt_bluetooth_connect(mac_addr)
+
             attempt_bluetooth_connect(mac_addr)
+            highlight_idx = None
+            highlight_timer = None
 
-        attempt_bluetooth_connect(mac_addr)
-        highlight_idx = None
-        highlight_timer = None
+            def bluetooth_info():
+                return refresh_bluetooth_info(PLAYER_PATH)
 
-        def bluetooth_info():
-            return refresh_bluetooth_info(PLAYER_PATH)
-
-        while not check_device_connected(mac_addr):
-            found = device_not_found_screen(
-                stdscr, bluez_mac, color_pair, autoretry_interval=autorefresh_interval,
-                reconnect_callback=do_reconnect
+            while not check_device_connected(mac_addr):
+                found = device_not_found_screen(
+                    stdscr, bluez_mac, color_pair, autoretry_interval=autorefresh_interval,
+                    reconnect_callback=do_reconnect
+                )
+                if not found:
+                    return
+            info = bluetooth_info()
+            prev_song_id = announce_song(info.get("Title", ""), info.get("Artist", ""), None, announce)
+            draw_ui(
+                stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
+                highlight_timer=highlight_timer, autorefresh_interval=autorefresh_interval,
+                bluetooth_mode=True,
+                mouse_ignore_idx=highlight_idx, visualizer_data=vis_data if visualizer_enabled else None, fg_color=fg_color, bg_color=bg_color
             )
-            if not found:
-                return
-        info = bluetooth_info()
-        prev_song_id = announce_song(info.get("Title", ""), info.get("Artist", ""), None, announce)
-        draw_ui(
-            stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
-            highlight_timer=highlight_timer, autorefresh_interval=autorefresh_interval,
-            bluetooth_mode=True,
-            mouse_ignore_idx=highlight_idx
-        )
-        last_refresh = time.time()
-        while True:
-            try:
-                key = stdscr.getch()
-                now = time.time()
-                highlight_idx, highlight_timer = update_highlight_timer(now, highlight_timer, highlight_idx, autorefresh_interval)
-
-                if not check_device_connected(mac_addr):
-                    found = device_not_found_screen(
-                        stdscr, bluez_mac, color_pair, autoretry_interval=autorefresh_interval,
-                        reconnect_callback=do_reconnect
-                    )
-                    if not found:
-                        return
-                    info = bluetooth_info()
-                    prev_song_id = announce_song(info.get("Title", ""), info.get("Artist", ""), prev_song_id, announce)
-                    draw_ui(
-                        stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
-                        highlight_timer=highlight_timer, autorefresh_interval=autorefresh_interval,
-                        bluetooth_mode=True,
-                        mouse_ignore_idx=highlight_idx
-                    )
-                    last_refresh = time.time()
-                    continue
-                if now - last_refresh > autorefresh_interval:
-                    info = bluetooth_info()
-                    prev_song_id = announce_song(info.get("Title", ""), info.get("Artist", ""), prev_song_id, announce)
-                    draw_ui(
-                        stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
-                        highlight_timer=highlight_timer, autorefresh_interval=autorefresh_interval,
-                        bluetooth_mode=True,
-                        mouse_ignore_idx=highlight_idx
-                    )
-                    last_refresh = now
-                if key == -1:
-                    time.sleep(0.05)
-                    continue
-                info_new, idx, quit_app, new_timer = handle_keypress_bluetooth(
-                    key, PLAYER_PATH, info, button_boxes, highlight_idx, highlight_timer, autorefresh_interval
-                )
-                if idx is not None:
-                    highlight_idx = idx
-                    highlight_timer = new_timer
-                info = bluetooth_info()
-                prev_song_id = announce_song(info.get("Title", ""), info.get("Artist", ""), prev_song_id, announce)
-                draw_ui(
-                    stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
-                    highlight_timer=highlight_timer, autorefresh_interval=autorefresh_interval,
-                    bluetooth_mode=True,
-                    mouse_ignore_idx=highlight_idx
-                )
-                last_refresh = time.time()
-                if quit_app:
-                    break
-            except KeyboardInterrupt:
-                break
-            except curses.error:
-                stdscr.clear()
-                msg = "Screen too small. Try resizing your terminal or accept your fate.\n(You lost to a terminal window, congrats.)"
+            last_ui_refresh = time.time()
+            last_visu_refresh = time.time()
+            while True:
                 try:
-                    stdscr.addstr(0, 0, msg)
-                    stdscr.refresh()
-                    time.sleep(2)
-                except Exception:
-                    pass
+                    key = stdscr.getch()
+                    now = time.time()
+                    highlight_idx, highlight_timer = update_highlight_timer(now, highlight_timer, highlight_idx, autorefresh_interval)
+
+                    if not check_device_connected(mac_addr):
+                        found = device_not_found_screen(
+                            stdscr, bluez_mac, color_pair, autoretry_interval=autorefresh_interval,
+                            reconnect_callback=do_reconnect
+                        )
+                        if not found:
+                            return
+                        info = bluetooth_info()
+                        prev_song_id = announce_song(info.get("Title", ""), info.get("Artist", ""), prev_song_id, announce)
+                        draw_ui(
+                            stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
+                            highlight_timer=highlight_timer, autorefresh_interval=autorefresh_interval,
+                            bluetooth_mode=True,
+                            mouse_ignore_idx=highlight_idx, visualizer_data=vis_data if visualizer_enabled else None, fg_color=fg_color, bg_color=bg_color
+                        )
+                        last_ui_refresh = time.time()
+                        last_visu_refresh = time.time()
+                        continue
+                    if now - last_announce_time < 3:
+                        skip_delay = 3
+                    else:
+                        skip_delay = 0
+                    ui_should_refresh = (now - last_ui_refresh > autorefresh_interval)
+                    visu_should_refresh = visualizer_enabled and (now - last_visu_refresh > visu_refresh)
+                    if ui_should_refresh or visu_should_refresh:
+                        if ui_should_refresh:
+                            info = bluetooth_info()
+                            prev_song_id = announce_song(info.get("Title", ""), info.get("Artist", ""), prev_song_id, announce, skip_delay=skip_delay)
+                            last_announce_time = now
+                        draw_ui(
+                            stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
+                            highlight_timer=highlight_timer, autorefresh_interval=autorefresh_interval,
+                            bluetooth_mode=True,
+                            mouse_ignore_idx=highlight_idx, visualizer_data=vis_data if visualizer_enabled else None, fg_color=fg_color, bg_color=bg_color
+                        )
+                        if ui_should_refresh:
+                            last_ui_refresh = now
+                        if visu_should_refresh:
+                            last_visu_refresh = now
+                    if key == -1:
+                        time.sleep(0.05)
+                        continue
+                    info_new, idx, quit_app, new_timer = handle_keypress_bluetooth(
+                        key, PLAYER_PATH, info, button_boxes, highlight_idx, highlight_timer, autorefresh_interval
+                    )
+                    if idx is not None:
+                        highlight_idx = idx
+                        highlight_timer = new_timer
+                    info = bluetooth_info()
+                    prev_song_id = announce_song(info.get("Title", ""), info.get("Artist", ""), prev_song_id, announce, skip_delay=skip_delay)
+                    last_announce_time = now
+                    draw_ui(
+                        stdscr, info, highlight_idx, button_boxes, color_pair=color_pair,
+                        highlight_timer=highlight_timer, autorefresh_interval=autorefresh_interval,
+                        bluetooth_mode=True,
+                        mouse_ignore_idx=highlight_idx, visualizer_data=vis_data if visualizer_enabled else None, fg_color=fg_color, bg_color=bg_color
+                    )
+                    last_ui_refresh = time.time()
+                    if quit_app:
+                        break
+                except KeyboardInterrupt:
+                    break
+                except curses.error:
+                    stdscr.clear()
+                    msg = "Screen too small. Try resizing your terminal or accept your fate.\n(You lost to a terminal window, congrats.)"
+                    try:
+                        stdscr.addstr(0, 0, msg)
+                        stdscr.refresh()
+                        time.sleep(2)
+                    except Exception:
+                        pass
+    finally:
+        # Cleanup CAVA process and config file
+        if stop_event:
+            stop_event.set()
+        if cava_process:
+            cava_process.terminate()
+            cava_process.wait()
+        if cava_config_file:
+            try:
+                os.unlink(cava_config_file)
+            except Exception:
+                pass
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Bluetooth Music Player UI with Mouse and Keyboard Control")
@@ -756,6 +905,10 @@ def parse_args():
     parser.add_argument('-b', '--bgcolor', type=str, default="default", help="Background color (0-255 or terminal default)")
     parser.add_argument('-a', '--autorefresh', type=float, default=1.0, help="Autorefresh interval in seconds (default: 1.0)")
     parser.add_argument('-A', '--announce', action='store_true', help="Announce songs using espeak (optional dependency - requires installation via a package manager)")
+    parser.add_argument('-V', '--visualizer', action='store_true', help="Show CAVA visualizer at the bottom of the UI (optional dependency - requires installation via a package manager)")
+    parser.add_argument('-v', '--visu-refresh', type=float, default=0.1, help="Refresh rate in seconds when visualizer is active (default: 0.1)")
+    parser.add_argument('-g', '--visu-autogain', action='store_true', default=False, help="Enable autogain for the visualizer (default: enabled)")
+    parser.add_argument('-B', '--visu-bars', type=int, default=30, help="Number of visualizer bars (min: 1, max: terminal width)")
     return parser.parse_args()
 
 def color_theme(theme, bgtheme="default"):
@@ -771,6 +924,9 @@ def run():
     # _/==\_
     # o----o
     args = parse_args()
+    # Always use both autorefresh and visu_refresh as separate values
+    autorefresh_interval = args.autorefresh
+    visu_refresh = getattr(args, 'visu_refresh', 0.1)
     missing = check_deps(espeak_optional=True)
     if missing:
         print("Missing dependencies:", ", ".join(missing))
@@ -783,7 +939,8 @@ def run():
         curses.use_default_colors()
         nonlocal fgpair, bgpair
         fgpair, bgpair = color_theme(args.color, args.bgcolor)
-        main(stdscr, mac_addr, fgpair, bgpair, autorefresh_interval=args.autorefresh, announce=args.announce)
+        # Pass both autorefresh_interval and visu_refresh to main
+        main(stdscr, mac_addr, fgpair, bgpair, autorefresh_interval=autorefresh_interval, visu_refresh=visu_refresh, announce=args.announce)
     try:
         curses.wrapper(wrapped)
     except curses.error:
