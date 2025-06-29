@@ -27,7 +27,7 @@ import threading
 import hashlib
 import urllib.request
 
-BUILD_TIMESTAMP = "1751239860"
+BUILD_TIMESTAMP = "1751240111"
 
 # Global variable to remember the currently running espeak pid
 ESPEAK_PID = None
