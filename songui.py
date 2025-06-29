@@ -27,7 +27,7 @@ import threading
 import hashlib
 import urllib.request
 
-BUILD_TIMESTAMP = "1751240111"
+BUILD_TIMESTAMP = "1751240512"
 
 # Global variable to remember the currently running espeak pid
 ESPEAK_PID = None
@@ -267,8 +267,10 @@ def draw_ui(stdscr, info, highlight_idx=None, button_boxes=None, color_pair=0, i
         stdscr.addstr(btn_y+btn_h+2, 0, "=" * max_x, curses.color_pair(color_pair))
         # Draw visualizer if present
         if visualizer_data is not None:
-            vis_height = max(4, max_y // 6)
-            draw_visualizer(stdscr, visualizer_data, max_y - vis_height, color_pair, fg_color, bg_color)
+            # Make the visualizer fill all available space below the UI
+            y_start = btn_y + btn_h + 3
+            if y_start < max_y:
+                draw_visualizer(stdscr, visualizer_data, y_start, color_pair, fg_color, bg_color)
         stdscr.refresh()
     except curses.error:
         stdscr.clear()
