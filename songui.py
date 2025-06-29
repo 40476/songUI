@@ -24,6 +24,8 @@ import signal
 import struct
 import tempfile
 import threading
+import hashlib
+import urllib.request
 
 # Global variable to remember the currently running espeak pid
 ESPEAK_PID = None
@@ -547,11 +549,24 @@ bit_format = %s
     config = conpat % (bars, "1" if autogain else "0", RAW_TARGET, bit_format)
     bytetype, bytesize, bytenorm = ("H", 2, 65535) if bit_format == "16bit" else ("B", 1, 255)
     def cava_reader(pipe, chunk, fmt, bytenorm, outlist, stop_event):
+        gain = 1.0
+        decay = 0.98
+        min_gain = 1.0
+        max_gain = 100.0
+        target = 0.98  # Target normalized height for the tallest bar
         while not stop_event.is_set():
             data = pipe.read(chunk)
             if not data or len(data) < chunk:
                 break
             sample = [i / bytenorm for i in struct.unpack(fmt, data)]
+            if autogain and sample:
+                peak = max(sample)
+                if peak > 0:
+                    new_gain = min(max_gain, max(min_gain, target / peak))
+                    gain = gain * decay + new_gain * (1 - decay)
+                else:
+                    gain = gain * decay
+                sample = [min(1.0, max(0.0, v * gain)) for v in sample]
             outlist[:] = sample
     config_file = tempfile.NamedTemporaryFile(delete=False)
     config_file.write(config.encode())
@@ -919,6 +934,19 @@ def color_theme(theme, bgtheme="default"):
     curses.init_pair(2, bg, fg)
     return 1, 2
 
+def check_for_update():
+    # Compare local songui.py to GitHub main branch raw file
+    github_url = "https://github.com/40476/songUI/raw/refs/heads/main/songui.py"
+    try:
+        with open(__file__, "rb") as f:
+            local_hash = hashlib.sha256(f.read()).hexdigest()
+        with urllib.request.urlopen(github_url, timeout=5) as resp:
+            remote_hash = hashlib.sha256(resp.read()).hexdigest()
+        if local_hash != remote_hash:
+            print("\n\033[93m[UPDATE AVAILABLE]\033[0m Your songui.py is not the latest version.\nGet the latest: https://github.com/40476/songUI\n")
+    except Exception as e:
+        pass
+
 def run():
     # "You cant park there sir"
     # _/==\_
@@ -945,6 +973,8 @@ def run():
         curses.wrapper(wrapped)
     except curses.error:
         print("Curses crashed or smth idk i didnt write curses")
+    finally:
+        check_for_update()
 
 if __name__ == "__main__":
     run()
