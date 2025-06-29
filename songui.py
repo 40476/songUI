@@ -946,8 +946,12 @@ def check_for_update():
         with urllib.request.urlopen(github_url, timeout=5) as resp:
             remote_version = resp.read().decode().strip()
         local_version = BUILD_TIMESTAMP.strip('"') if isinstance(BUILD_TIMESTAMP, str) else str(BUILD_TIMESTAMP)
-        if remote_version and local_version != remote_version:
-            print(f"\n\033[93m[UPDATE AVAILABLE]\033[0m Your BUILD_TIMESTAMP is {local_version}, but the latest is {remote_version}.\nGet the latest: https://github.com/40476/songUI\n")
+        if remote_version:
+            if local_version != remote_version:
+                if local_version > remote_version:
+                    print(f"\n\033[96m[REMINDER]\033[0m Your BUILD_TIMESTAMP ({local_version}) is newer than the repo's ({remote_version}).\nDon't forget to push your changes, or the time police will come for you!\n")
+                else:
+                    print(f"\n\033[93m[UPDATE AVAILABLE]\033[0m Your BUILD_TIMESTAMP is {local_version}, but the latest is {remote_version}.\nGet the latest: https://github.com/40476/songUI\n")
     except Exception as e:
         pass
 
