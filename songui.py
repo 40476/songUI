@@ -27,7 +27,7 @@ import threading
 import hashlib
 import urllib.request
 
-BUILD_TIMESTAMP = "1751240512"
+BUILD_TIMESTAMP = "1751240792"
 
 # Global variable to remember the currently running espeak pid
 ESPEAK_PID = None
@@ -939,15 +939,15 @@ def color_theme(theme, bgtheme="default"):
     return 1, 2
 
 def check_for_update():
-    # Compare local songui.py to GitHub main branch raw file
-    github_url = "https://github.com/40476/songUI/raw/refs/heads/main/songui.py"
+    # Compare local BUILD_TIMESTAMP to GitHub main branch version.txt
+    github_url = "https://github.com/40476/songUI/raw/refs/heads/main/version.txt"
     try:
-        with open(__file__, "rb") as f:
-            local_hash = hashlib.sha256(f.read()).hexdigest()
+        remote_version = None
         with urllib.request.urlopen(github_url, timeout=5) as resp:
-            remote_hash = hashlib.sha256(resp.read()).hexdigest()
-        if local_hash != remote_hash:
-            print("\n\033[93m[UPDATE AVAILABLE]\033[0m Your songui.py is not the latest version.\nGet the latest: https://github.com/40476/songUI\n")
+            remote_version = resp.read().decode().strip()
+        local_version = BUILD_TIMESTAMP.strip('"') if isinstance(BUILD_TIMESTAMP, str) else str(BUILD_TIMESTAMP)
+        if remote_version and local_version != remote_version:
+            print(f"\n\033[93m[UPDATE AVAILABLE]\033[0m Your BUILD_TIMESTAMP is {local_version}, but the latest is {remote_version}.\nGet the latest: https://github.com/40476/songUI\n")
     except Exception as e:
         pass
 
