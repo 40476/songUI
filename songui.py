@@ -1,17 +1,4 @@
 #!/bin/python3.13
-"""
-- Shows track info, progress bar, and basic controls.
-- If --device/-D is not specified, uses currently playing local MPRIS2 player.
-- For internal audio: If remaining time is negative, animates a <===> bar moving across.
-- Low CPU usage
-- Buttons stay highlighted for (autorefresh_interval*0.60) seconds after being pressed.
-- If --device is specified, attempts to connect at startup.
-- "Reconnect" is a keyboard key ([r]), available only when device not found.
-- All command-line arguments have short forms.
-- In internal mode, if no player is found: show "No Player" screen, auto-retry every autorefresh interval.
-- If --announce/-A is set, announce new song/artist changes using espeak.
-- Now with: --bgcolor, 256 color support, snarky tiny screen error, instant highlight, and mouse ignore if highlighted.
-"""
 
 import curses
 import subprocess
@@ -27,7 +14,8 @@ import threading
 import hashlib
 import urllib.request
 
-BUILD_TIMESTAMP = "1751240792"
+# Update time! Yes honey...
+BUILD_TIMESTAMP = "1751322220"
 
 # Global variable to remember the currently running espeak pid
 ESPEAK_PID = None
@@ -220,13 +208,15 @@ def draw_ui(stdscr, info, highlight_idx=None, button_boxes=None, color_pair=0, i
         fill_background(stdscr, color_pair)
         max_y, max_x = stdscr.getmaxyx()
         album = info.get("Track", info.get("Album", 'Unknown Album'))
-        if album.endswith("Album:"):
-            album='Unknown Album'
+        if not album or not any(c.isprintable() and not c.isspace() for c in str(album)) or album.endswith("Album:"):
+            album = 'Unknown Album'
         elif album.startswith("Album: ") or album.startswith("Track: "):
             album = album[7:]
         title = info.get("Title", "Unknown Title")
+        if not title or not any(c.isprintable() and not c.isspace() for c in str(title)):
+            title = "Unknown Title"
         artist = info.get("Artist", "Unknown Artist")
-        if artist == "":
+        if not artist or not any(c.isprintable() and not c.isspace() for c in str(artist)):
             artist = "Unknown Artist"
         status = info.get("Status", "paused").capitalize()
         try:
@@ -362,8 +352,27 @@ def refresh_internal_audio_info(player):
         info["Position"] = str(int(float(pos) * 1000))
     except Exception:
         info["Position"] = "0"
-    dur = get(["playerctl", "-p", player, "metadata", "mpris:length"])
-    info["Duration"] = dur if dur else "1"
+    # Find all keys ending with :length and use the smallest value
+    try:
+        metadata = subprocess.check_output(["playerctl", "-p", player, "metadata"], text=True, stderr=subprocess.DEVNULL)
+        length_values = []
+        for line in metadata.splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2:
+                key, value = parts
+                if key.endswith(":length"):
+                    try:
+                        length_values.append(int(value))
+                    except Exception:
+                        pass
+        if length_values:
+            info["Duration"] = str(min(length_values))
+        else:
+            dur = get(["playerctl", "-p", player, "metadata", "mpris:length"])
+            info["Duration"] = dur if dur else "1"
+    except Exception:
+        dur = get(["playerctl", "-p", player, "metadata", "mpris:length"])
+        info["Duration"] = dur if dur else "1"
     return info
 
 def refresh_bluetooth_info(PLAYER_PATH):
@@ -939,7 +948,7 @@ def color_theme(theme, bgtheme="default"):
     return 1, 2
 
 def check_for_update():
-    # Compare local BUILD_TIMESTAMP to GitHub main branch version.txt
+    """Check for updates and return a message if an update is available, else return None."""
     github_url = "https://github.com/40476/songUI/raw/refs/heads/main/version.txt"
     try:
         remote_version = None
@@ -949,16 +958,26 @@ def check_for_update():
         if remote_version:
             if local_version != remote_version:
                 if local_version > remote_version:
-                    print(f"\n\033[96m[REMINDER]\033[0m Your BUILD_TIMESTAMP ({local_version}) is newer than the repo's ({remote_version}).\nDon't forget to push your changes, or the time police will come for you!\n")
+                    return f"\n\033[96m[REMINDER]\033[0m Your BUILD_TIMESTAMP ({local_version}) is newer than the repo's ({remote_version}).\nDon't forget to push your changes, or the time police will come for you!\n"
                 else:
-                    print(f"\n\033[93m[UPDATE AVAILABLE]\033[0m Your BUILD_TIMESTAMP is {local_version}, but the latest is {remote_version}.\nGet the latest: https://github.com/40476/songUI\n")
-    except Exception as e:
+                    return f"\n\033[93m[UPDATE AVAILABLE]\033[0m Your BUILD_TIMESTAMP is {local_version}, but the latest is {remote_version}.\nGet the latest: https://github.com/40476/songUI\n"
+    except Exception:
         pass
+    return None
 
 def run():
     # "You cant park there sir"
     # _/==\_
     # o----o
+    # Start update check in the background, store result in a shared variable
+    import threading
+    update_message = {'msg': None}
+    update_done = threading.Event()
+    def update_check_worker():
+        # I DONT CARE IF ITS INVALID IT F*CKING WORKS PISS YOU PLEBIAN CLASS LINTER
+        update_message['msg'] = check_for_update()
+        update_done.set()
+    threading.Thread(target=update_check_worker, daemon=True).start()
     args = parse_args()
     # Always use both autorefresh and visu_refresh as separate values
     autorefresh_interval = args.autorefresh
@@ -981,8 +1000,10 @@ def run():
         curses.wrapper(wrapped)
     except curses.error:
         print("Curses crashed or smth idk i didnt write curses")
-    finally:
-        check_for_update()
+    # Output update message on exit (if any), waiting briefly for thread
+    update_done.wait(timeout=0.2)
+    if update_message['msg']:
+        print(update_message['msg'])
 
 if __name__ == "__main__":
     run()
