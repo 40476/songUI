@@ -15,10 +15,15 @@ import hashlib
 import urllib.request
 
 # Update time! Yes honey...
-BUILD_TIMESTAMP = "1751322220"
+BUILD_TIMESTAMP = "1751405469"
 
 # Global variable to remember the currently running espeak pid
 ESPEAK_PID = None
+# Announcement thread and event for async announcement
+ANNOUNCE_THREAD = None
+ANNOUNCE_EVENT = threading.Event()
+ANNOUNCE_LOCK = threading.Lock()
+ANNOUNCE_PENDING = {'title': None, 'artist': None, 'enabled': False, 'prev_id': None}
 
 # Dependency free checker (is playerctl/espeak/qdbus6/figlet in $PATH? or is the user a dumb*ss?)
 def check_deps(espeak_optional=False):
@@ -69,7 +74,7 @@ def check_device_connected(mac_addr):
         return False
 
 def attempt_bluetooth_connect(mac_addr):
-    # Attempts to connect to your Bluetooth device like a desperate AirPods user in Starbucks.
+    # Attempts to connect to your Bluetooth device like a desperate AirPods user in Starbucks. (JBL FOREVER GET REKT)
     try:
         subprocess.run(['bluetoothctl', 'connect', bluez_to_mac(mac_addr)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
@@ -77,7 +82,7 @@ def attempt_bluetooth_connect(mac_addr):
         return False
 
 def figlet_centered(stdscr, text, color_pair=0):
-    # Centers your figlet message, because you deserve to be the center of attention.
+    # Centers your figlet message, because it deserves to be the center of attention. (prob ur gf if u have on tho)
     max_y, max_x = stdscr.getmaxyx()
     try:
         figlet_out = subprocess.check_output(
@@ -86,7 +91,7 @@ def figlet_centered(stdscr, text, color_pair=0):
             stderr=subprocess.DEVNULL
         )
     except Exception:
-        figlet_out = text  # If you don't have figlet, you get boring text.
+        figlet_out = text  # If you don't have figlet, you get boring text. (LMAO imagine)
     lines = figlet_out.splitlines()
     y0 = max((max_y - len(lines)) // 2, 0)
     for i, line in enumerate(lines):
@@ -97,7 +102,7 @@ def figlet_centered(stdscr, text, color_pair=0):
             pass
 
 def which_button(mx, my, button_boxes):
-    # Returns which button (if any) your greasy mouse pointer is over.
+    # Returns which button (if any) your greasy finger is over. (not your mouse pointer, you filthy casual)
     for idx, (y1, x1, y2, x2) in enumerate(button_boxes):
         if y1 <= my < y2 and x1 <= mx < x2:
             return idx
@@ -387,25 +392,64 @@ def refresh_bluetooth_info(PLAYER_PATH):
     return info
 
 def announce_song(title, artist, prev_id, announce_enabled, skip_delay=0):
-    # Uses espeak to announce the song, so your neighbours know how good your taste is.
-    global ESPEAK_PID
+    """
+    Schedule an announcement for the song, but only announce after skipping has stopped for a short period.
+    If a new song is requested before the delay, the previous announcement is cancelled.
+    """
+    global ESPEAK_PID, ANNOUNCE_THREAD, ANNOUNCE_EVENT, ANNOUNCE_PENDING
     curr_id = (title, artist)
-    if announce_enabled and curr_id != prev_id and shutil.which("espeak"):
-        text = f"Now playing: {title} by {artist}"
-        # Kill previous espeak process by PID if it exists, because otherwise it's karaoke chaos
-        try:
-            if ESPEAK_PID is not None and int(ESPEAK_PID) > 0:
-                os.kill(int(ESPEAK_PID), signal.SIGKILL)
-        except Exception:
-            pass
-        try:
-            if skip_delay > 0:
-                time.sleep(skip_delay)
-            proc = subprocess.Popen(['espeak', text])
-            ESPEAK_PID = proc.pid
-        except Exception:
-            ESPEAK_PID = None
+    if not announce_enabled or shutil.which("espeak") is None:
+        return curr_id
+    if curr_id == prev_id:
+        return curr_id
+    with ANNOUNCE_LOCK:
+        ANNOUNCE_PENDING['title'] = title
+        ANNOUNCE_PENDING['artist'] = artist
+        ANNOUNCE_PENDING['enabled'] = announce_enabled
+        ANNOUNCE_PENDING['prev_id'] = prev_id
+        # Cancel any pending announcement
+        ANNOUNCE_EVENT.set()
+        ANNOUNCE_EVENT.clear()
+        if ANNOUNCE_THREAD is None or not ANNOUNCE_THREAD.is_alive():
+            ANNOUNCE_THREAD = threading.Thread(target=_announce_worker, daemon=True)
+            ANNOUNCE_THREAD.start()
     return curr_id
+
+def _announce_worker():
+    global ESPEAK_PID, ANNOUNCE_EVENT, ANNOUNCE_PENDING
+    while True:
+        # Wait for a short period; if event is set, restart wait
+        interrupted = ANNOUNCE_EVENT.wait(timeout=1.5)
+        if interrupted:
+            ANNOUNCE_EVENT.clear()
+            continue
+        with ANNOUNCE_LOCK:
+            title = ANNOUNCE_PENDING['title']
+            artist = ANNOUNCE_PENDING['artist']
+            enabled = ANNOUNCE_PENDING['enabled']
+            prev_id = ANNOUNCE_PENDING['prev_id']
+            curr_id = (title, artist)
+            # Only announce if enabled and not same as prev_id
+            if enabled and curr_id != prev_id and shutil.which("espeak"):
+                text = f"Now playing: {title} by {artist}"
+                try:
+                    if ESPEAK_PID is not None and int(ESPEAK_PID) > 0:
+                        os.kill(int(ESPEAK_PID), signal.SIGKILL)
+                except Exception:
+                    pass
+                try:
+                    proc = subprocess.Popen(['espeak', text])
+                    ESPEAK_PID = proc.pid
+                except Exception:
+                    ESPEAK_PID = None
+            # After announcing, clear prev_id to prevent repeats
+            ANNOUNCE_PENDING['prev_id'] = curr_id
+        # Wait for next event or exit if not needed
+        ANNOUNCE_EVENT.clear()
+        # If no new announcement is pending, exit thread
+        with ANNOUNCE_LOCK:
+            if ANNOUNCE_PENDING['title'] is None:
+                break
 
 def handle_keypress_internal_audio(key, player, info, button_boxes, stdscr, color_pair, highlight_idx, highlight_timer, autorefresh_interval):
     # Handles all keypresses, including mouse clicks (for those who hate the keyboard).
@@ -971,11 +1015,11 @@ def run():
     # o----o
     # Start update check in the background, store result in a shared variable
     import threading
-    update_message = {'msg': None}
+    update_message = {'msg': None}  # type: dict[str, str | None]
     update_done = threading.Event()
     def update_check_worker():
-        # I DONT CARE IF ITS INVALID IT F*CKING WORKS PISS YOU PLEBIAN CLASS LINTER
-        update_message['msg'] = check_for_update()
+        msg = check_for_update()
+        update_message['msg'] = msg if msg is not None else ''
         update_done.set()
     threading.Thread(target=update_check_worker, daemon=True).start()
     args = parse_args()
