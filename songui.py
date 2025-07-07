@@ -15,8 +15,7 @@ import hashlib
 import urllib.request
 
 # Update time! Yes honey...
-BUILD_TIMESTAMP = "1751405469"
-
+BUILD_TIMESTAMP = "1751928491"
 # Global variable to remember the currently running espeak pid
 ESPEAK_PID = None
 # Announcement thread and event for async announcement
@@ -438,7 +437,8 @@ def _announce_worker():
                 except Exception:
                     pass
                 try:
-                    proc = subprocess.Popen(['espeak', text, '2>', '/dev/null'])
+                    import subprocess
+                    proc = subprocess.Popen(['espeak', text], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     ESPEAK_PID = proc.pid
                 except Exception:
                     ESPEAK_PID = None
