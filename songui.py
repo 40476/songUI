@@ -438,7 +438,7 @@ def _announce_worker():
                 except Exception:
                     pass
                 try:
-                    proc = subprocess.Popen(['espeak', text])
+                    proc = subprocess.Popen(['espeak', text, '2>', '/dev/null'])
                     ESPEAK_PID = proc.pid
                 except Exception:
                     ESPEAK_PID = None
