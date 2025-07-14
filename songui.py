@@ -15,9 +15,9 @@ import hashlib
 import urllib.request
 
 # Update time! Yes honey...
-BUILD_TIMESTAMP = "1752496163"
+BUILD_TIMESTAMP = "1752498602"
 
-BUILD_TIMESTAMP = "1752496163"
+BUILD_TIMESTAMP = "1752498602"
 # Global variable to remember the currently running espeak pid
 ESPEAK_PID = None
 # Announcement thread and event for async announcement
@@ -149,9 +149,12 @@ def draw_control_buttons(stdscr, labels, highlight_idx, button_boxes, color_pair
     # Draws the play/pause/next/prev buttons with instant highlight, because you need that dopamine NOW.
     max_y, max_x = stdscr.getmaxyx()
     button_boxes.clear()
+    
+    # get rekt (rect)
     btn_y = 9
     btn_h = 5
     btn_w = 13
+
     gap = 6
     num_btns = len(labels)
     total_btns = num_btns * btn_w + (num_btns - 1) * gap
