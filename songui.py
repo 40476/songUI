@@ -15,7 +15,7 @@ import hashlib
 import urllib.request
 
 # Update time! Yes honey...
-BUILD_TIMESTAMP = "1751405469"
+BUILD_TIMESTAMP = "1752496097"
 
 # Global variable to remember the currently running espeak pid
 ESPEAK_PID = None
@@ -1013,7 +1013,7 @@ def run():
     # "You cant park there sir"
     # _/==\_
     # o----o
-    # Start update check in the background, store result in a shared variable
+    # Start update check in the background, store result in a shared variable (balls)
     import threading
     update_message = {'msg': None}  # type: dict[str, str | None]
     update_done = threading.Event()
@@ -1023,7 +1023,6 @@ def run():
         update_done.set()
     threading.Thread(target=update_check_worker, daemon=True).start()
     args = parse_args()
-    # Always use both autorefresh and visu_refresh as separate values
     autorefresh_interval = args.autorefresh
     visu_refresh = getattr(args, 'visu_refresh', 0.1)
     missing = check_deps(espeak_optional=True)
@@ -1038,13 +1037,11 @@ def run():
         curses.use_default_colors()
         nonlocal fgpair, bgpair
         fgpair, bgpair = color_theme(args.color, args.bgcolor)
-        # Pass both autorefresh_interval and visu_refresh to main
         main(stdscr, mac_addr, fgpair, bgpair, autorefresh_interval=autorefresh_interval, visu_refresh=visu_refresh, announce=args.announce)
     try:
         curses.wrapper(wrapped)
     except curses.error:
         print("Curses crashed or smth idk i didnt write curses")
-    # Output update message on exit (if any), waiting briefly for thread
     update_done.wait(timeout=0.2)
     if update_message['msg']:
         print(update_message['msg'])
